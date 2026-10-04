@@ -15,6 +15,8 @@
  *    6  coupure de courant pendant l'installation de v2.0
  *    s  état des slots    r  redémarrer    e  retour usine
  *
+ *  Dashboard web servi par l'ESP32 : http://localhost:8183 (redirection Wokwi).
+ *
  *  Le cœur (bootloader.c, sha256.c) est du C portable testé sur PC avec des
  *  coupures de courant simulées à chaque écriture flash (test/).
  *
@@ -25,6 +27,9 @@
  * ============================================================================
  */
 #include <Arduino.h>
+#include <stdarg.h>
+#include <WiFi.h>
+#include <WebServer.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -35,6 +40,7 @@
 #include "bootloader.h"
 #include "public_key.h"
 #include "demo_images.h"
+#include "web_page.h"
 
 #define PIN_LED_APP  2     // LED verte : clignotement de l'application
 #define PIN_LED_SEC  4     // LED rouge : image refusée
@@ -87,6 +93,31 @@ static String ver(uint32_t v) { return String(v >> 16) + "." + String((v >> 8) &
 // ---------------------------------------------------------------------------
 volatile const char *g_status = "";
 volatile int g_progress = -1;
+volatile bool g_busy = false;              // mise à jour en cours
+uint32_t g_verifyMs = 0;                   // temps de vérification au démarrage
+
+// Journal : chaque message part sur le moniteur série ET dans la page web
+#define LOG_LINES 16
+struct LogLine { uint32_t t; char m[92]; };
+LogLine logBuf[LOG_LINES]; volatile uint32_t logCount = 0;
+portMUX_TYPE logMux = portMUX_INITIALIZER_UNLOCKED;
+static void logStore(const char *m) {
+  while (*m == '\n' || *m == ' ') m++;                      // espaces et retours de début
+  if (!*m) return;
+  LogLine l; l.t = millis(); strlcpy(l.m, m, sizeof l.m);
+  size_t n = strlen(l.m); while (n && (l.m[n - 1] == '\n' || l.m[n - 1] == ' ')) l.m[--n] = 0;
+  for (char *c = l.m; *c; c++) if (*c == '"' || *c == '\\') *c = '\'';   // sûr pour le JSON
+  portENTER_CRITICAL(&logMux); logBuf[logCount % LOG_LINES] = l; logCount++; portEXIT_CRITICAL(&logMux);
+}
+static void LOG(const char *fmt, ...) {
+  char b[160]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+  Serial.print(b); logStore(b);
+}
+static void LOGLN(const char *m) { Serial.println(m); logStore(m); }
+
+// Résumé des slots pour la page web (recalculé avec refreshSlots)
+struct SlotInfo { char name[16]; uint32_t ver; int status; bool active, pending; };
+SlotInfo slotInfo[2];
 
 // Résumé des slots, recalculé seulement quand il change (la vérification coûte du temps CPU)
 char slotTxt[2][24];
@@ -97,7 +128,16 @@ static void slotLine(int slot, char *out, size_t n) {
   else snprintf(out, n, "%c: %s", 'A' + slot, s == IMG_ERR_EMPTY ? "vide" : "INVALIDE");
 }
 
-static void refreshSlots() { slotLine(0, slotTxt[0], sizeof slotTxt[0]); slotLine(1, slotTxt[1], sizeof slotTxt[1]); }
+static void refreshSlots() {
+  slotLine(0, slotTxt[0], sizeof slotTxt[0]); slotLine(1, slotTxt[1], sizeof slotTxt[1]);
+  for (int i = 0; i < 2; i++) {
+    fw_header_t h; img_status_t st = bl_verify_slot(&bl, i, &h);
+    SlotInfo si = {}; si.status = st;
+    if (st == IMG_OK) { strlcpy(si.name, h.name, sizeof si.name); si.ver = h.fw_version; }
+    si.active = (i == bl.st.active); si.pending = (i == bl.st.pending);
+    slotInfo[i] = si;
+  }
+}
 
 void taskDisplay(void *) {
   for (;;) {
@@ -143,15 +183,16 @@ static void rejectFlash() {
 }
 
 static void installImage(const uint8_t *img, uint32_t n, const char *what, bool powerCut) {
-  Serial.printf("\n>>> Telechargement : %s (%lu octets) dans le slot %c\n", what, (unsigned long)n, 'A' + bl_inactive_slot(&bl));
+  LOG("\n>>> Telechargement : %s (%lu octets) dans le slot %c\n", what, (unsigned long)n, 'A' + bl_inactive_slot(&bl));
   g_status = "telechargement...";
-  if (bl_update_begin(&bl, n)) { Serial.println("    ERREUR flash"); return; }
+  g_busy = true;
+  if (bl_update_begin(&bl, n)) { LOGLN("    ERREUR flash"); return; }
   for (uint32_t off = 0; off < n; off += 256) {
     uint32_t k = n - off < 256 ? n - off : 256;
     bl_update_write(&bl, off, img + off, k);
     g_progress = (int)((off + k) * 100 / n);
     if (powerCut && off > n / 2) {
-      Serial.println("    !!! COUPURE DE COURANT a 50 % de l'ecriture !!!");
+      LOGLN("    !!! COUPURE DE COURANT a 50 % de l'ecriture !!!");
       Serial.flush();
       delay(300);
       esp_restart();                                   // comme une vraie coupure
@@ -159,21 +200,22 @@ static void installImage(const uint8_t *img, uint32_t n, const char *what, bool 
     vTaskDelay(pdMS_TO_TICKS(15));
   }
   g_progress = -1;
-  Serial.println("    Verification : SHA-256 du contenu, signature ECDSA P-256, version...");
+  LOGLN("    Verification : SHA-256 du contenu, signature ECDSA P-256, version...");
   uint32_t t0 = micros();
   fw_header_t h;
   img_status_t s = bl_update_finish(&bl, &h);
   uint32_t us = micros() - t0;
   if (s == IMG_OK) {
-    Serial.printf("    ACCEPTEE (%lu ms) : %s v%s. Redemarrage pour l'installer...\n", (unsigned long)(us / 1000), h.name, ver(h.fw_version).c_str());
+    LOG("    ACCEPTEE (%lu ms) : %s v%s. Redemarrage pour l'installer...\n", (unsigned long)(us / 1000), h.name, ver(h.fw_version).c_str());
     g_status = "OK -> redemarrage";
     delay(1500);
     esp_restart();
   } else {
     refreshSlots();
-    Serial.printf("    REFUSEE : %s\n", img_status_str(s));
-    Serial.println("    Le firmware actuel continue de tourner, rien n'a ete installe.");
+    LOG("    REFUSEE : %s\n", img_status_str(s));
+    LOGLN("    Le firmware actuel continue de tourner, rien n'a ete installe.");
     g_status = "IMAGE REFUSEE";
+    g_busy = false;
     rejectFlash();
   }
 }
@@ -183,20 +225,22 @@ static void menu() {
   Serial.println("       6 coupure de courant | s etat | r redemarrer | e retour usine");
 }
 
+QueueHandle_t webCmdQ;                     // commandes envoyées par la page web
+
 void taskApp(void *) {
   // Autotest de la nouvelle version (démarrage d'essai)
   if (boot.trial) {
-    Serial.printf("[APP] Demarrage d'essai %d/%d : autotest en cours...\n", bl.st.tries, BL_MAX_TRIES);
+    LOG("[APP] Demarrage d'essai %d/%d : autotest en cours...\n", bl.st.tries, BL_MAX_TRIES);
     g_status = "autotest...";
     vTaskDelay(pdMS_TO_TICKS(2500));
     if (app.selftestOk) {
       bl_confirm(&bl);
       boot.trial = 0;
       refreshSlots();
-      Serial.printf("[APP] Autotest OK : version confirmee. Version minimale = v%s\n", ver(bl.st.min_version).c_str());
+      LOG("[APP] Autotest OK : version confirmee. Version minimale = v%s\n", ver(bl.st.min_version).c_str());
       g_status = "autotest OK";
     } else {
-      Serial.println("[APP] Autotest ECHOUE : l'application plante -> le chien de garde redemarre la carte");
+      LOGLN("[APP] Autotest ECHOUE : l'application plante -> le chien de garde redemarre la carte");
       g_status = "PLANTAGE !";
       vTaskDelay(pdMS_TO_TICKS(2000));
       esp_restart();
@@ -204,8 +248,10 @@ void taskApp(void *) {
   }
   menu();
   for (;;) {
-    if (Serial.available()) {
-      char c = Serial.read();
+    char c = 0;
+    if (Serial.available()) c = Serial.read();
+    else if (xQueueReceive(webCmdQ, &c, 0) != pdTRUE) c = 0;
+    if (c) {
       switch (c) {
         case '1': installImage(IMG_V2, sizeof IMG_V2, "v2.0 (signee)", false); break;
         case '2': installImage(IMG_V3_BUGGY, sizeof IMG_V3_BUGGY, "v3.0 (signee, boguee)", false); break;
@@ -214,9 +260,9 @@ void taskApp(void *) {
         case '5': installImage(IMG_DOWNGRADE, sizeof IMG_DOWNGRADE, "ancienne version v1.0", false); break;
         case '6': installImage(IMG_V2, sizeof IMG_V2, "v2.0 (avec coupure de courant)", true); break;
         case 's': printSlots(); break;
-        case 'r': Serial.println("Redemarrage..."); delay(200); esp_restart(); break;
+        case 'r': LOGLN("Redemarrage..."); delay(200); esp_restart(); break;
         case 'e':
-          Serial.println("Retour usine : effacement complet...");
+          LOGLN("Retour usine : effacement complet...");
           fErase(nullptr, 0, BL_FLASH_SIZE); delay(200); esp_restart(); break;
         default: continue;
       }
@@ -229,45 +275,98 @@ void taskApp(void *) {
 // ---------------------------------------------------------------------------
 //  BOOTLOADER
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+//  Dashboard web
+// ---------------------------------------------------------------------------
+WebServer server(80);
+
+static void webState() {
+  static char buf[4096];
+  int n = snprintf(buf, sizeof buf,
+    "{\"uptime\":%lu,\"app\":{\"name\":\"%s\",\"msg\":\"%s\",\"blink\":%d},"
+    "\"boot\":{\"slot\":\"%c\",\"trial\":%d,\"tries\":%d,\"max\":%d,\"rolledBack\":%d,\"verifyMs\":%lu},"
+    "\"minVersion\":\"%s\",\"busy\":%d,\"progress\":%d,\"status\":\"%s\",\"slots\":[",
+    (unsigned long)millis(), app.name, app.msg, app.blink, 'A' + boot.slot, boot.trial, bl.st.tries, BL_MAX_TRIES,
+    boot.rolled_back, (unsigned long)g_verifyMs, ver(bl.st.min_version).c_str(), (int)g_busy, (int)g_progress, (const char *)g_status);
+  for (int i = 0; i < 2; i++) {
+    const SlotInfo &si = slotInfo[i];
+    n += snprintf(buf + n, sizeof buf - n, "%s{\"id\":\"%c\",\"ok\":%d,\"name\":\"%s\",\"ver\":\"%s\",\"status\":\"%s\",\"active\":%d,\"pending\":%d}",
+                  i ? "," : "", 'A' + i, si.status == IMG_OK, si.name, si.status == IMG_OK ? ver(si.ver).c_str() : "",
+                  img_status_str((img_status_t)si.status), si.active, si.pending);
+  }
+  n += snprintf(buf + n, sizeof buf - n, "],\"log\":[");
+  portENTER_CRITICAL(&logMux);
+  uint32_t cnt = logCount, first = cnt > LOG_LINES ? cnt - LOG_LINES : 0;
+  LogLine copy[LOG_LINES]; int k = 0;
+  for (uint32_t q = first; q < cnt; q++) copy[k++] = logBuf[q % LOG_LINES];
+  portEXIT_CRITICAL(&logMux);
+  for (int i = k - 1; i >= 0; i--)                                    // du plus récent au plus ancien
+    n += snprintf(buf + n, sizeof buf - n, "%s{\"t\":%lu,\"m\":\"%s\"}", i == k - 1 ? "" : ",", (unsigned long)copy[i].t, copy[i].m);
+  snprintf(buf + n, sizeof buf - n, "]}");
+  server.send(200, "application/json", buf);
+}
+
+static void webCmd() {
+  String c = server.arg("c");
+  if (c.length() == 1 && strchr("123456re", c.c_str()[0]) && !g_busy) {
+    char ch = c.c_str()[0];
+    xQueueSend(webCmdQ, &ch, 0);
+    server.send(200, "text/plain", "ok");
+  } else server.send(409, "text/plain", "occupe");
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(PIN_LED_APP, OUTPUT); pinMode(PIN_LED_SEC, OUTPUT);
   Wire.begin(21, 22);
   oled.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   delay(200);
-  Serial.println("\n========== BOOTLOADER SECURISE ==========");
+  LOGLN("\n========== BOOTLOADER SECURISE ==========");
 
   part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
-  if (!part || part->size < BL_FLASH_SIZE) { Serial.println("ERREUR : partition de donnees introuvable"); for (;;) delay(1000); }
+  if (!part || part->size < BL_FLASH_SIZE) { LOGLN("ERREUR : partition de donnees introuvable"); for (;;) delay(1000); }
   bl.flash = &flashDev; bl.verify = verifyMbedtls; bl.pubkey = FW_PUBLIC_KEY;
 
   int r = bl_boot(&bl, &boot);
   if (r < 0) {
-    Serial.println("Carte vierge : installation du firmware usine v1.0 (verifie lui aussi)");
+    LOGLN("Carte vierge : installation du firmware usine v1.0 (verifie lui aussi)");
     if (bl_factory_install(&bl, IMG_FACTORY_V1, sizeof IMG_FACTORY_V1) == 0) r = bl_boot(&bl, &boot);
   }
   if (r != 1) {
-    Serial.println("AUCUNE IMAGE VALIDE : la carte reste dans le bootloader (mode secours)");
+    LOGLN("AUCUNE IMAGE VALIDE : la carte reste dans le bootloader (mode secours)");
     for (;;) { digitalWrite(PIN_LED_SEC, !digitalRead(PIN_LED_SEC)); delay(200); }
   }
   if (boot.rolled_back)
-    Serial.println("!! La mise a jour ne s'est jamais confirmee : RETOUR AUTOMATIQUE a la version precedente");
+    LOGLN("!! La mise a jour ne s'est jamais confirmee : RETOUR AUTOMATIQUE a la version precedente");
 
   uint32_t t0 = micros();
   bl_verify_slot(&bl, boot.slot, nullptr);              // pour mesurer le temps de vérification
-  Serial.printf("Slot %c : %s v%s | SHA-256 + signature ECDSA P-256 verifiees en %lu ms\n",
+  g_verifyMs = (micros() - t0) / 1000;
+  LOG("Slot %c : %s v%s | SHA-256 + signature ECDSA P-256 verifiees en %lu ms\n",
                 'A' + boot.slot, boot.hdr.name, ver(boot.hdr.fw_version).c_str(), (unsigned long)((micros() - t0) / 1000));
-  Serial.printf("%s -> lancement de l'application\n", boot.trial ? "DEMARRAGE D'ESSAI" : "Version confirmee");
+  LOG("%s -> lancement de l'application\n", boot.trial ? "DEMARRAGE D'ESSAI" : "Version confirmee");
   printSlots();
-  Serial.println("=========================================\n");
+  LOGLN("=========================================\n");
 
   parseDescriptor(boot.slot);
   refreshSlots();
-  Serial.printf("[APP] %s : \"%s\" (LED toutes les %d ms)\n", app.name, app.msg, app.blink);
+  LOG("[APP] %s : \"%s\" (LED toutes les %d ms)\n", app.name, app.msg, app.blink);
 
   xTaskCreatePinnedToCore(taskDisplay, "display", 4096, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(taskBlink, "blink", 2048, nullptr, 1, nullptr, 1);
+  webCmdQ = xQueueCreate(4, sizeof(char));
   xTaskCreatePinnedToCore(taskApp, "app", 8192, nullptr, 2, nullptr, 1);
+
+  WiFi.begin("Wokwi-GUEST", "", 6);
+  for (int k = 0; k < 40 && WiFi.status() != WL_CONNECTED; k++) delay(250);
+  server.on("/", []() { server.send(200, "text/html; charset=utf-8", WEB_PAGE); });
+  server.on("/api/state", webState);
+  server.on("/api/cmd", webCmd);
+  server.begin();
+  Serial.printf("# Dashboard web : http://localhost:8183 (Wi-Fi %s)\n", WiFi.status() == WL_CONNECTED ? "OK" : "non connecte");
 }
 
-void loop() { vTaskDelay(portMAX_DELAY); }
+void loop() {
+  server.handleClient();
+  delay(2);
+}

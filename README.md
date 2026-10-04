@@ -45,7 +45,8 @@ En-tête d'image (128 octets) : magic | version | taille | SHA-256 du contenu | 
 |---|---|
 | `src/bootloader.c` | décision de démarrage, slots A/B, essai, retour arrière, anti-downgrade |
 | `src/sha256.c` | SHA-256 en C portable (vérifié avec les vecteurs du NIST) |
-| `src/main.cpp` | ESP32 : flash réelle (`esp_partition`), ECDSA avec mbedTLS, OLED, menu |
+| `src/main.cpp` | ESP32 : flash réelle (`esp_partition`), ECDSA avec mbedTLS, OLED, menu, serveur web |
+| `src/web_page.h` | dashboard web embarqué (thème clair / sombre) |
 | `tools/sign.js` | génération des clés et signature des images (Node.js, sans dépendance) |
 | `test/test_bootloader.c` | 15 tests : attaques, retour arrière, coupures de courant |
 
@@ -53,6 +54,8 @@ En-tête d'image (128 octets) : magic | version | taille | SHA-256 du contenu | 
 
 1. Ouvre ce dossier dans VS Code → PlatformIO **Build** → **F1 › Wokwi: Start Simulator**.
 2. Au premier démarrage, le firmware usine v1.0 est installé et vérifié.
+   Ouvre **http://localhost:8183** : le dashboard (firmware en service, slots A/B, journal, boutons des
+   scénarios). Tu peux tout faire depuis la page ou depuis le moniteur série.
 3. Dans le moniteur série, tape :
    - `1` : mise à jour v2.0 → redémarrage → autotest → confirmée, la LED clignote plus vite ;
    - `3` ou `4` : images piratées → **refusées**, la LED rouge clignote ;
