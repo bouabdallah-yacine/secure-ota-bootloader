@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+t
+# La clé privée ne doit JAMAIS être publiée
+keys/
+*.pem
