@@ -80,3 +80,7 @@ gcc -O2 -Wall -Wextra -Isrc -o t test/test_bootloader.c src/bootloader.c src/sha
 node tools/sign.js keygen   # nouvelle paire de clés (keys/private.pem reste sur ton PC)
 node tools/sign.js demo     # régénère src/demo_images.h avec ta clé
 ```
+
+## Licence
+
+© 2026 Yacine — tous droits réservés. Code publié pour consultation uniquement (voir [`LICENSE`](LICENSE)).
