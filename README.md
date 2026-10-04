@@ -1,5 +1,7 @@
 # 🔐 Bootloader sécurisé : mise à jour signée, slots A/B et retour arrière (ESP32)
 
+[![Tests](https://github.com/bouabdellah-yacine/secure-ota-bootloader/actions/workflows/ci.yml/badge.svg)](https://github.com/bouabdellah-yacine/secure-ota-bootloader/actions/workflows/ci.yml)
+
 Comme la mise à jour d'un téléphone : la carte reçoit un nouveau firmware, **vérifie sa signature
 numérique** avant de l'installer, **refuse les versions piratées ou trop anciennes**, et **revient toute
 seule à l'ancienne version** si la nouvelle plante. Une coupure de courant pendant la mise à jour ne
