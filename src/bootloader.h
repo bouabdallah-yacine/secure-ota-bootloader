@@ -1,19 +1,19 @@
 /*
  * ============================================================================
- *  Bootloader sécurisé : vérification de signature, slots A/B, retour arrière
+ *  Secure bootloader: signature verification, A/B slots, rollback
  * ============================================================================
- *  Mémoire flash :  [ slot A ][ slot B ][ état 0 ][ état 1 ]
+ *  Flash memory:  [ slot A ][ slot B ][ state 0 ][ state 1 ]
  *
- *  - Une mise à jour s'écrit TOUJOURS dans le slot inactif : le firmware qui
- *    tourne n'est jamais écrasé, une coupure de courant ne peut rien casser.
- *  - Avant d'être démarrée, une image est vérifiée : SHA-256 du contenu +
- *    signature ECDSA P-256 avec la clé publique du fabricant.
- *  - Anti-retour arrière : une version plus ancienne que la dernière version
- *    confirmée est refusée (elle peut contenir des failles connues).
- *  - Démarrage d'essai : la nouvelle version doit se confirmer après son
- *    autotest. Sinon, après 3 démarrages ratés, retour automatique à l'ancienne.
- *  - L'état est écrit en double (2 secteurs, numéro de séquence + CRC32) :
- *    une coupure pendant son écriture laisse toujours une copie valide.
+ *  - An update is ALWAYS written to the inactive slot: the running firmware
+ *    is never overwritten, so a power cut cannot break anything.
+ *  - Before it is booted, an image is verified: SHA-256 of the payload +
+ *    ECDSA P-256 signature with the manufacturer's public key.
+ *  - Anti-rollback: a version older than the last confirmed version is
+ *    rejected (it may contain known vulnerabilities).
+ *  - Trial boot: the new version must confirm itself after its self-test.
+ *    Otherwise, after 3 failed boots, it automatically falls back to the old one.
+ *  - The state is written twice (2 sectors, sequence number + CRC32):
+ *    a power cut while it is being written always leaves one valid copy.
  * ============================================================================
  */
 #pragma once
@@ -24,7 +24,7 @@ extern "C" {
 #endif
 
 #define BL_SECTOR      4096u
-#define BL_SLOT_SIZE   (8u * BL_SECTOR)          /* 32 Ko par slot */
+#define BL_SLOT_SIZE   (8u * BL_SECTOR)          /* 32 KB per slot */
 #define BL_SLOT_A      0u
 #define BL_SLOT_B      BL_SLOT_SIZE
 #define BL_STATE0      (2u * BL_SLOT_SIZE)
@@ -33,24 +33,24 @@ extern "C" {
 #define BL_MAX_TRIES   3
 #define BL_NONE        0xFF
 
-/* Accès à la mémoire flash (fourni par la plateforme : ESP32 ou simulation PC) */
+/* Flash memory access (provided by the platform: ESP32 or PC simulation) */
 typedef struct {
   int (*read)(void *ctx, uint32_t off, void *buf, uint32_t n);
   int (*write)(void *ctx, uint32_t off, const void *buf, uint32_t n);
-  int (*erase)(void *ctx, uint32_t off, uint32_t n);       /* par secteurs de 4 Ko */
+  int (*erase)(void *ctx, uint32_t off, uint32_t n);       /* in 4 KB sectors */
   void *ctx;
 } bl_flash_t;
 
-/* Vérification ECDSA P-256 (fournie par la plateforme : mbedTLS / OpenSSL) */
+/* ECDSA P-256 verification (provided by the platform: mbedTLS / OpenSSL) */
 typedef int (*bl_verify_fn)(const uint8_t pub[65], const uint8_t hash[32], const uint8_t sig[64]);
 
 typedef struct {
   uint32_t magic, seq;
   uint8_t  active;        /* 0 = A, 1 = B */
-  uint8_t  pending;       /* slot en essai, ou BL_NONE */
-  uint8_t  tries;         /* démarrages d'essai déjà tentés */
-  uint8_t  rolled_back;   /* 1 si le dernier démarrage a annulé une mise à jour */
-  uint32_t min_version;   /* compteur anti-retour arrière */
+  uint8_t  pending;       /* slot on trial, or BL_NONE */
+  uint8_t  tries;         /* trial boots already attempted */
+  uint8_t  rolled_back;   /* 1 if the last boot cancelled an update */
+  uint32_t min_version;   /* anti-rollback counter */
   uint32_t crc;
 } bl_state_t;
 
@@ -71,15 +71,15 @@ typedef struct { int slot; int trial; int rolled_back; fw_header_t hdr; } bl_dec
 const char  *img_status_str(img_status_t s);
 img_status_t bl_verify_slot(bl_t *b, int slot, fw_header_t *hdr);
 
-/* Au démarrage : 1 = image choisie (dans d), 0 = aucune image valide, -1 = carte vierge */
+/* At boot: 1 = image selected (in d), 0 = no valid image, -1 = blank board */
 int  bl_boot(bl_t *b, bl_decision_t *d);
 int  bl_factory_install(bl_t *b, const uint8_t *img, uint32_t n);
 
-/* Mise à jour (appelée par l'application) */
+/* Update (called by the application) */
 int          bl_update_begin(bl_t *b, uint32_t size);
 int          bl_update_write(bl_t *b, uint32_t off, const void *data, uint32_t n);
 img_status_t bl_update_finish(bl_t *b, fw_header_t *hdr);
-int          bl_confirm(bl_t *b);        /* l'application valide la version en essai */
+int          bl_confirm(bl_t *b);        /* the application confirms the trial version */
 int          bl_inactive_slot(const bl_t *b);
 
 static inline uint32_t bl_slot_addr(int slot) { return slot ? BL_SLOT_B : BL_SLOT_A; }

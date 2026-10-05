@@ -1,8 +1,8 @@
-// Dashboard web du bootloader sécurisé, servi par l'ESP32
+// Secure bootloader web dashboard, served by the ESP32
 #pragma once
 static const char WEB_PAGE[] = R"HTML(<!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bootloader sécurisé</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure Bootloader</title>
 <style>
 :root{--bg:#f2f1ed;--panel:#fff;--line:#dcd9d1;--ink:#1e1f22;--mut:#666a70;--acc:#3557a6;--ok:#2d7a4f;--bad:#b3362a;--warn:#b26f00;--btn:#f7f6f2;--chip:#eceae4;color-scheme:light}
 :root[data-theme="dark"]{--bg:#121315;--panel:#1b1c20;--line:#2c2e33;--ink:#e7e8ea;--mut:#9396a0;--acc:#7c9cf0;--ok:#5cc489;--bad:#ef6b5e;--warn:#f0a531;--btn:#222428;--chip:#26282d;color-scheme:dark}
@@ -31,12 +31,12 @@ button.danger{color:var(--bad)}
 #banner{display:none;padding:12px 14px;border-radius:10px;font-weight:600}
 ol{list-style:none;margin:0;padding:0;font-size:12.5px;max-height:330px;overflow:auto}ol li{padding:4px 0;border-bottom:1px solid var(--line)}ol span{color:var(--mut);margin-right:8px}
 </style></head><body><main>
-<header><h1>Bootloader sécurisé</h1>
-<span style="display:flex;gap:10px;align-items:center"><span class="mono" id="conn" style="color:var(--mut)">connexion…</span><button id="theme" aria-label="Changer de thème">◐</button></span></header>
+<header><h1>Secure Bootloader</h1>
+<span style="display:flex;gap:10px;align-items:center"><span class="mono" id="conn" style="color:var(--mut)">connecting…</span><button id="theme" aria-label="Toggle theme">◐</button></span></header>
 <div id="banner"></div>
 
 <section class="top">
- <div class="panel"><h2>Firmware en service</h2>
+ <div class="panel"><h2>Running firmware</h2>
   <div class="big"><span class="led" id="led"></span><span id="appname">–</span></div>
   <div class="sub" id="appmsg"></div>
   <div style="margin-top:10px" id="bootchips"></div>
@@ -47,20 +47,20 @@ ol{list-style:none;margin:0;padding:0;font-size:12.5px;max-height:330px;overflow
 </section>
 
 <section class="cols">
- <div class="panel"><h2>Scénarios de mise à jour</h2>
+ <div class="panel"><h2>Update scenarios</h2>
   <div class="scen">
-   <button data-c="1"><span>Installer v2.0</span><small>signée, valide</small></button>
-   <button data-c="2"><span>Installer v3.0</span><small>signée mais boguée → retour arrière</small></button>
-   <button data-c="3"><span>Image piratée</span><small>contenu modifié + hash recalculé</small></button>
-   <button data-c="4"><span>Signée par une autre clé</span><small>firmware d'un attaquant</small></button>
-   <button data-c="5"><span>Revenir à v1.0</span><small>ancienne version, failles connues</small></button>
-   <button data-c="6"><span>Coupure de courant</span><small>pendant l'installation de v2.0</small></button>
+   <button data-c="1"><span>Install v2.0</span><small>signed, valid</small></button>
+   <button data-c="2"><span>Install v3.0</span><small>signed but buggy → rollback</small></button>
+   <button data-c="3"><span>Tampered image</span><small>modified content + recomputed hash</small></button>
+   <button data-c="4"><span>Signed with another key</span><small>attacker's firmware</small></button>
+   <button data-c="5"><span>Downgrade to v1.0</span><small>old version, known vulnerabilities</small></button>
+   <button data-c="6"><span>Power cut</span><small>while installing v2.0</small></button>
   </div>
   <div class="prog" id="progw" hidden><span id="prog"></span></div>
   <div class="sub" id="status"></div>
-  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button data-c="r">Redémarrer</button><button class="danger" id="factory">Retour usine</button></div>
+  <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button data-c="r">Reboot</button><button class="danger" id="factory">Factory reset</button></div>
  </div>
- <div class="panel"><h2>Journal du bootloader</h2><ol class="mono" id="log"></ol></div>
+ <div class="panel"><h2>Bootloader log</h2><ol class="mono" id="log"></ol></div>
 </section>
 </main><script>
 const $=id=>document.getElementById(id);
@@ -71,24 +71,24 @@ const $=id=>document.getElementById(id);
 let blink=500,lastUp=0,factoryArm=0;
 async function cmd(c){try{await fetch('/api/cmd?c='+c)}catch(e){}}
 document.querySelectorAll('button[data-c]').forEach(b=>b.onclick=()=>cmd(b.dataset.c));
-$('factory').onclick=()=>{if(Date.now()-factoryArm<3000){cmd('e');factoryArm=0;$('factory').textContent='Retour usine'}
- else{factoryArm=Date.now();$('factory').textContent='Confirmer : tout effacer ?';setTimeout(()=>{if(factoryArm){factoryArm=0;$('factory').textContent='Retour usine'}},3000)}};
+$('factory').onclick=()=>{if(Date.now()-factoryArm<3000){cmd('e');factoryArm=0;$('factory').textContent='Factory reset'}
+ else{factoryArm=Date.now();$('factory').textContent='Confirm: erase everything?';setTimeout(()=>{if(factoryArm){factoryArm=0;$('factory').textContent='Factory reset'}},3000)}};
 (function tick(){$('led').classList.toggle('on');setTimeout(tick,Math.max(60,blink))})();
 const chip=(t,c)=>'<span class="chip '+(c||'')+'">'+t+'</span>';
 function slot(el,s,id){el.className='panel slot'+(s.active?' active':s.pending?' pending':'');
- el.innerHTML='<h2>Slot '+id+'</h2>'+(s.ok?'<div class="big">'+s.name+'</div><div class="sub mono">version '+s.ver+'</div><div style="margin-top:8px">'+chip('signature OK','ok')+(s.active?chip('actif','acc'):'')+(s.pending?chip('en essai','warn'):'')+'</div>'
-  :'<div class="big" style="color:var(--mut)">'+(s.status=='slot vide'?'vide':'invalide')+'</div><div class="sub">'+s.status+'</div>')}
+ el.innerHTML='<h2>Slot '+id+'</h2>'+(s.ok?'<div class="big">'+s.name+'</div><div class="sub mono">version '+s.ver+'</div><div style="margin-top:8px">'+chip('signature OK','ok')+(s.active?chip('active','acc'):'')+(s.pending?chip('on trial','warn'):'')+'</div>'
+  :'<div class="big" style="color:var(--mut)">'+(s.status=='empty slot'?'empty':'invalid')+'</div><div class="sub">'+s.status+'</div>')}
 async function refresh(){try{
  const s=await (await fetch('/api/state')).json();
- if(s.uptime<lastUp){$('banner').style.display='block';$('banner').style.background='var(--chip)';$('banner').textContent='La carte vient de redémarrer : le bootloader a vérifié la signature et choisi le slot '+s.boot.slot+'.';setTimeout(()=>$('banner').style.display='none',6000)}
- lastUp=s.uptime;$('conn').textContent='ESP32 en ligne';
- blink=s.app.blink;$('appname').textContent=s.app.name;$('appmsg').textContent=s.app.msg+' · LED toutes les '+s.app.blink+' ms';
- $('bootchips').innerHTML=chip('slot '+s.boot.slot,'acc')+(s.boot.trial?chip('démarrage d\'essai '+s.boot.tries+'/'+s.boot.max,'warn'):chip('version confirmée','ok'))+(s.boot.rolledBack?chip('retour arrière effectué','bad'):'')+chip('version min. v'+s.minVersion);
- $('verify').textContent='SHA-256 + signature ECDSA P-256 vérifiées en '+s.boot.verifyMs+' ms au démarrage';
+ if(s.uptime<lastUp){$('banner').style.display='block';$('banner').style.background='var(--chip)';$('banner').textContent='The board just rebooted: the bootloader verified the signature and selected slot '+s.boot.slot+'.';setTimeout(()=>$('banner').style.display='none',6000)}
+ lastUp=s.uptime;$('conn').textContent='ESP32 online';
+ blink=s.app.blink;$('appname').textContent=s.app.name;$('appmsg').textContent=s.app.msg+' · LED every '+s.app.blink+' ms';
+ $('bootchips').innerHTML=chip('slot '+s.boot.slot,'acc')+(s.boot.trial?chip('trial boot '+s.boot.tries+'/'+s.boot.max,'warn'):chip('confirmed version','ok'))+(s.boot.rolledBack?chip('rolled back','bad'):'')+chip('min. version v'+s.minVersion);
+ $('verify').textContent='SHA-256 + ECDSA P-256 signature verified in '+s.boot.verifyMs+' ms at boot';
  slot($('slotA'),s.slots[0],'A');slot($('slotB'),s.slots[1],'B');
- $('progw').hidden=s.progress<0;$('prog').style.width=Math.max(0,s.progress)+'%';$('status').textContent=s.status;$('status').style.color=/REFUS|PLANT/.test(s.status)?'var(--bad)':/OK/.test(s.status)?'var(--ok)':'var(--mut)';
+ $('progw').hidden=s.progress<0;$('prog').style.width=Math.max(0,s.progress)+'%';$('status').textContent=s.status;$('status').style.color=/REJECT|CRASH/.test(s.status)?'var(--bad)':/OK/.test(s.status)?'var(--ok)':'var(--mut)';
  document.querySelectorAll('button[data-c]').forEach(b=>b.disabled=!!s.busy);
  $('log').innerHTML=s.log.map(l=>'<li><span>'+(l.t/1000).toFixed(1)+' s</span>'+l.m+'</li>').join('');
-}catch(e){$('conn').textContent='redémarrage de la carte…'}}
+}catch(e){$('conn').textContent='board rebooting…'}}
 refresh();setInterval(refresh,400);
 </script></body></html>)HTML";

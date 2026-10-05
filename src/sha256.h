@@ -1,4 +1,4 @@
-/* SHA-256 en C portable (FIPS 180-4) — même code sur l'ESP32 et dans les tests PC */
+/* Portable C SHA-256 (FIPS 180-4) — same code on the ESP32 and in the PC tests */
 #pragma once
 #include <stdint.h>
 #include <stddef.h>

@@ -7,13 +7,13 @@
 
 const char *img_status_str(img_status_t s) {
   switch (s) {
-    case IMG_OK:            return "image valide";
-    case IMG_ERR_EMPTY:     return "slot vide";
-    case IMG_ERR_FORMAT:    return "format invalide ou image incomplete";
-    case IMG_ERR_HASH:      return "contenu modifie (SHA-256 incorrect)";
-    case IMG_ERR_SIGNATURE: return "signature invalide (pas signee par le fabricant)";
-    case IMG_ERR_DOWNGRADE: return "version trop ancienne (anti-retour arriere)";
-    case IMG_ERR_FLASH:     return "erreur d'ecriture flash";
+    case IMG_OK:            return "valid image";
+    case IMG_ERR_EMPTY:     return "empty slot";
+    case IMG_ERR_FORMAT:    return "invalid format or incomplete image";
+    case IMG_ERR_HASH:      return "modified content (SHA-256 mismatch)";
+    case IMG_ERR_SIGNATURE: return "invalid signature (not signed by the manufacturer)";
+    case IMG_ERR_DOWNGRADE: return "version too old (anti-rollback)";
+    case IMG_ERR_FLASH:     return "flash write error";
   }
   return "?";
 }
@@ -26,7 +26,7 @@ static uint32_t crc32(const void *data, size_t n) {
 }
 
 /* ---------------------------------------------------------------------------
- *  Vérification d'une image : format → hash du contenu → signature
+ *  Image verification: format → payload hash → signature
  * ------------------------------------------------------------------------- */
 img_status_t bl_verify_slot(bl_t *b, int slot, fw_header_t *hdr) {
   fw_header_t h;
@@ -48,7 +48,7 @@ img_status_t bl_verify_slot(bl_t *b, int slot, fw_header_t *hdr) {
   if (memcmp(digest, h.sha256, 32) != 0) return IMG_ERR_HASH;
 
   uint8_t hh[32];
-  sha256(&h, FW_SIGNED_SIZE, hh);                      /* l'en-tête contient le hash du contenu */
+  sha256(&h, FW_SIGNED_SIZE, hh);                      /* the header contains the payload hash */
   if (!b->verify(b->pubkey, hh, h.signature)) return IMG_ERR_SIGNATURE;
 
   if (hdr) *hdr = h;
@@ -56,7 +56,7 @@ img_status_t bl_verify_slot(bl_t *b, int slot, fw_header_t *hdr) {
 }
 
 /* ---------------------------------------------------------------------------
- *  État persistant en double exemplaire (résiste aux coupures de courant)
+ *  Persistent state stored in two copies (survives power cuts)
  * ------------------------------------------------------------------------- */
 static int state_valid(const bl_state_t *s) {
   return s->magic == STATE_MAGIC && s->crc == crc32(s, offsetof(bl_state_t, crc));
@@ -76,17 +76,17 @@ static int save_state(bl_t *b) {
   b->st.magic = STATE_MAGIC;
   b->st.seq++;
   b->st.crc = crc32(&b->st, offsetof(bl_state_t, crc));
-  uint32_t addr = (b->st.seq & 1) ? BL_STATE1 : BL_STATE0;    /* on alterne les secteurs */
+  uint32_t addr = (b->st.seq & 1) ? BL_STATE1 : BL_STATE0;    /* alternate between sectors */
   if (b->flash->erase(b->flash->ctx, addr, BL_SECTOR)) return -1;
   return b->flash->write(b->flash->ctx, addr, &b->st, sizeof b->st);
 }
 
 /* ---------------------------------------------------------------------------
- *  Décision de démarrage
+ *  Boot decision
  * ------------------------------------------------------------------------- */
 int bl_boot(bl_t *b, bl_decision_t *d) {
   memset(d, 0, sizeof *d);
-  if (!load_state(b)) return -1;                       /* carte vierge : installation usine */
+  if (!load_state(b)) return -1;                       /* blank board: factory install */
   int changed = 0;
   b->st.rolled_back = 0;
 
@@ -95,7 +95,7 @@ int bl_boot(bl_t *b, bl_decision_t *d) {
     img_status_t s = bl_verify_slot(b, b->st.pending, &h);
     if (s == IMG_OK && h.fw_version < b->st.min_version) s = IMG_ERR_DOWNGRADE;
     if (s != IMG_OK || b->st.tries >= BL_MAX_TRIES) {
-      b->st.pending = BL_NONE;                         /* annulation : retour à l'ancienne version */
+      b->st.pending = BL_NONE;                         /* cancel: fall back to the old version */
       b->st.rolled_back = 1;
       changed = 1;
     } else {
@@ -109,7 +109,7 @@ int bl_boot(bl_t *b, bl_decision_t *d) {
   fw_header_t h;
   img_status_t s = bl_verify_slot(b, b->st.active, &h);
   if (s == IMG_OK && h.fw_version < b->st.min_version) s = IMG_ERR_DOWNGRADE;
-  if (s != IMG_OK) {                                   /* slot actif abîmé : on tente l'autre */
+  if (s != IMG_OK) {                                   /* active slot damaged: try the other one */
     int other = !b->st.active;
     s = bl_verify_slot(b, other, &h);
     if (s != IMG_OK || h.fw_version < b->st.min_version) return 0;
@@ -127,7 +127,7 @@ int bl_factory_install(bl_t *b, const uint8_t *img, uint32_t n) {
   if (b->flash->erase(b->flash->ctx, BL_SLOT_A, BL_SLOT_SIZE)) return -1;
   if (b->flash->write(b->flash->ctx, BL_SLOT_A, img, n)) return -1;
   fw_header_t h;
-  if (bl_verify_slot(b, 0, &h) != IMG_OK) return -1;   /* même l'image usine est vérifiée */
+  if (bl_verify_slot(b, 0, &h) != IMG_OK) return -1;   /* even the factory image is verified */
   memset(&b->st, 0, sizeof b->st);
   b->st.active = 0; b->st.pending = BL_NONE; b->st.min_version = h.fw_version;
   b->flash->erase(b->flash->ctx, BL_STATE0, 2 * BL_SECTOR);
@@ -135,13 +135,13 @@ int bl_factory_install(bl_t *b, const uint8_t *img, uint32_t n) {
 }
 
 /* ---------------------------------------------------------------------------
- *  Mise à jour : écriture dans le slot inactif, vérification, démarrage d'essai
+ *  Update: write to the inactive slot, verification, trial boot
  * ------------------------------------------------------------------------- */
 int bl_inactive_slot(const bl_t *b) { return !b->st.active; }
 
 int bl_update_begin(bl_t *b, uint32_t size) {
   if (size < FW_HDR_SIZE || size > BL_SLOT_SIZE) return -1;
-  if (b->st.pending != BL_NONE) {                      /* une mise à jour non confirmée est abandonnée */
+  if (b->st.pending != BL_NONE) {                      /* an unconfirmed update is discarded */
     b->st.pending = BL_NONE;
     if (save_state(b)) return -1;
   }
@@ -169,12 +169,12 @@ img_status_t bl_update_finish(bl_t *b, fw_header_t *hdr) {
 }
 
 int bl_confirm(bl_t *b) {
-  if (b->st.pending == BL_NONE) return 0;              /* rien à confirmer */
+  if (b->st.pending == BL_NONE) return 0;              /* nothing to confirm */
   fw_header_t h;
   if (bl_verify_slot(b, b->st.pending, &h) != IMG_OK) return -1;
   b->st.active = b->st.pending;
   b->st.pending = BL_NONE;
   b->st.tries = 0;
-  b->st.min_version = h.fw_version;                    /* le compteur anti-retour arrière avance */
+  b->st.min_version = h.fw_version;                    /* the anti-rollback counter moves forward */
   return save_state(b);
 }
