@@ -1,6 +1,6 @@
 # 🔐 Secure bootloader: signed updates, A/B slots and rollback (ESP32)
 
-[![Tests](https://github.com/bouabdellah-yacine/secure-ota-bootloader/actions/workflows/ci.yml/badge.svg)](https://github.com/bouabdellah-yacine/secure-ota-bootloader/actions/workflows/ci.yml)
+[![Tests](https://github.com/bouabdallah-yacine/secure-ota-bootloader/actions/workflows/ci.yml/badge.svg)](https://github.com/bouabdallah-yacine/secure-ota-bootloader/actions/workflows/ci.yml)
 
 Just like a phone update: the board receives a new firmware, **verifies its digital signature**
 before installing it, **rejects tampered or outdated versions**, and **automatically falls back to
